@@ -1,0 +1,94 @@
+blck
+
+Verifying Linera (micro)chains with a light client requires following
+the chain's blocks and subsequently confirming whether an event, a
+message, state change, were part of that block. Our current block
+definition - `ExecutedBlock` type - was not made for this purpose:
+- there is no distinction between block's "metadata" and the "body" -
+which would allow for _light_ verification of the blocks.
+- the events/messages/operations are all layed out, flat, in the
+`BlockExecutionOutcome` w/o a way to easily verify whether a particular
+event is part of that set other than sending the whole vector.
+
+## Proposal
+
+In this PR we introduce the new block structures. The new `Block` type
+consists of two elements:
+- (block) header
+- (block) body.
+
+`BlockHeader` is a succint representation of the chain's new block. It
+contains metadata that suffices to track the chain's progress:
+```rust
+pub struct BlockHeader {
+    /// The block version.
+    pub version: u8, // TODO: More granular versioning. #3078
+    /// The chain to which this block belongs.
+    pub chain_id: ChainId,
+    /// The number identifying the current configuration.
+    pub epoch: Epoch,
+    /// The block height.
+    pub height: BlockHeight,
+    /// The timestamp when this block was created.
+    pub timestamp: Timestamp,
+    /// The hash of the chain's execution state after this block.
+    pub state_hash: CryptoHash,
+    /// Certified hash of the previous block in the
+    /// chain, if any.
+    pub previous_block_hash: Option<CryptoHash>,
+    /// The user signing for the operations in the block and paying for their execution
+    /// fees. If set, this must be the `owner` in the block proposal. `None` means that
+    /// the default account of the chain is used. This value is also used as recipient of
+    /// potential refunds for the message grants created by the operations.
+    pub authenticated_signer: Option<Owner>,
+
+    // Inputs to the block, chosen by the block proposer.
+    /// Cryptographic hash of all the incoming bundles in the block.
+    pub bundles_hash: CryptoHash,
+    /// Cryptographic hash of all the operations in the block.
+    pub operations_hash: CryptoHash,
+
+    // Outcome of the block execution.
+    /// Cryptographic hash of all the messages in the block.
+    pub messages_hash: CryptoHash,
+    /// Cryptographic hash of all the oracle responses in the block.
+    pub oracle_responses_hash: CryptoHash,
+    /// Cryptographic hash of all the events in the block.
+    pub events_hash: CryptoHash,
+}
+```
+
+`BlockBody` holds the data that is not necessary for (light)
+verification but was either an input to the block's execution (incoming
+bundles, operations) or its output (oracle responses, messages sent,
+events emitted). Each vector is deterministically hashed (into
+`CryptoHash`) and the result of that hashing is put into the
+`BlockHeader`. This way it's possible to verify inclusion of any
+specific element w/o having to sent all of the body.
+
+```rust
+/// The body of a block containing all the data included in the block.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct BlockBody {
+    /// A selection of incoming messages to be executed first. Successive messages of same
+    /// sender and height are grouped together for conciseness.
+    pub incoming_bundles: Vec<IncomingBundle>,
+    /// The operations to execute.
+    pub operations: Vec<Operation>,
+    /// The list of outgoing messages for each transaction.
+    pub messages: Vec<Vec<OutgoingMessage>>,
+    /// The record of oracle responses for each transaction.
+    pub oracle_responses: Vec<Vec<OracleResponse>>,
+    /// The list of events produced by each transaction.
+    pub events: Vec<Vec<EventRecord>>,
+}
+```
+
+## Test Plan
+
+All of the tests have been updated to work with the new types.
+
+## Release Plan
+
+- These changes follow the usual release cycle. Although we may want to
+defer this update since this change is not backwards compatible.
